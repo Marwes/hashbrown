@@ -1,0 +1,9 @@
+(function() {var implementors = {};
+implementors["ahash"] = [{"text":"impl Default for RandomState","synthetic":false,"types":[]},{"text":"impl Default for AHasher","synthetic":false,"types":[]}];
+implementors["crossbeam_channel"] = [{"text":"impl&lt;'a&gt; Default for Select&lt;'a&gt;","synthetic":false,"types":[]}];
+implementors["crossbeam_epoch"] = [{"text":"impl&lt;T&gt; Default for Atomic&lt;T&gt;","synthetic":false,"types":[]},{"text":"impl&lt;'g, T&gt; Default for Shared&lt;'g, T&gt;","synthetic":false,"types":[]}];
+implementors["crossbeam_utils"] = [{"text":"impl&lt;T:&nbsp;Default&gt; Default for AtomicCell&lt;T&gt;","synthetic":false,"types":[]},{"text":"impl&lt;T:&nbsp;Default&gt; Default for CachePadded&lt;T&gt;","synthetic":false,"types":[]},{"text":"impl Default for Backoff","synthetic":false,"types":[]},{"text":"impl&lt;T:&nbsp;Default&gt; Default for ShardedLock&lt;T&gt;","synthetic":false,"types":[]}];
+implementors["hashbrown"] = [{"text":"impl&lt;K, V, S&gt; Default for HashMap&lt;K, V, S&gt; <span class=\"where fmt-newline\">where<br>&nbsp;&nbsp;&nbsp;&nbsp;S: Default,&nbsp;</span>","synthetic":false,"types":[]},{"text":"impl&lt;T, S&gt; Default for HashSet&lt;T, S&gt; <span class=\"where fmt-newline\">where<br>&nbsp;&nbsp;&nbsp;&nbsp;S: Default,&nbsp;</span>","synthetic":false,"types":[]}];
+implementors["rayon_core"] = [{"text":"impl Default for ThreadPoolBuilder","synthetic":false,"types":[]},{"text":"impl Default for Configuration","synthetic":false,"types":[]}];
+implementors["serde"] = [{"text":"impl Default for IgnoredAny","synthetic":false,"types":[]}];
+if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
