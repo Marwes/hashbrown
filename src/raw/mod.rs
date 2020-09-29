@@ -552,15 +552,7 @@ impl<T> RawTable<T> {
     /// Marks all table buckets as empty without dropping their contents.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn clear_no_drop(&mut self) {
-        if !self.is_empty_singleton() {
-            unsafe {
-                self.table
-                    .ctrl(0)
-                    .write_bytes(EMPTY, self.table.num_ctrl_bytes());
-            }
-        }
-        self.table.items = 0;
-        self.table.growth_left = bucket_mask_to_capacity(self.table.bucket_mask);
+        self.table.clear_no_drop()
     }
 
     /// Removes all elements from the table without freeing the backing memory.
@@ -1292,6 +1284,18 @@ impl RawTableInner {
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn free_buckets(&mut self, layout: Layout, ctrl_offset: usize) {
         dealloc(self.ctrl.as_ptr().sub(ctrl_offset), layout);
+    }
+
+    /// Marks all table buckets as empty without dropping their contents.
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn clear_no_drop(&mut self) {
+        if !self.is_empty_singleton() {
+            unsafe {
+                self.ctrl(0).write_bytes(EMPTY, self.num_ctrl_bytes());
+            }
+        }
+        self.items = 0;
+        self.growth_left = bucket_mask_to_capacity(self.bucket_mask);
     }
 }
 
