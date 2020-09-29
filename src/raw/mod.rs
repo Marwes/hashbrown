@@ -1119,11 +1119,11 @@ impl RawTableInner {
     unsafe fn bucket<T>(&self, index: usize) -> Bucket<T> {
         debug_assert_ne!(self.bucket_mask, 0);
         debug_assert!(index < self.buckets());
-        Bucket::from_base_index(self.data_end().cast::<T>(), index)
+        Bucket::from_base_index(self.data_end(), index)
     }
 
-    unsafe fn data_end(&self) -> NonNull<u8> {
-        NonNull::new_unchecked(self.ctrl.as_ptr())
+    unsafe fn data_end<T>(&self) -> NonNull<T> {
+        NonNull::new_unchecked(self.ctrl.as_ptr() as *mut T)
     }
 
     unsafe fn search_new_slot(&mut self, i: usize, hash: u64) -> Slot {
