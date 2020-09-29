@@ -559,44 +559,6 @@ impl<T> RawTable<T> {
         }
     }
 
-    /// Searches for an empty or deleted bucket which is suitable for inserting
-    /// a new element.
-    ///
-    /// There must be at least 1 empty bucket in the table.
-    #[cfg_attr(feature = "inline-more", inline)]
-    fn find_insert_slot(&self, hash: u64) -> usize {
-        let mut probe_seq = self.table.probe_seq(hash);
-        loop {
-            let pos = probe_seq.pos;
-            unsafe {
-                let group = Group::load(self.table.ctrl(pos));
-                if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
-                    let result = (pos + bit) & self.table.bucket_mask;
-
-                    // In tables smaller than the group width, trailing control
-                    // bytes outside the range of the table are filled with
-                    // EMPTY entries. These will unfortunately trigger a
-                    // match, but once masked may point to a full bucket that
-                    // is already occupied. We detect this situation here and
-                    // perform a second scan starting at the begining of the
-                    // table. This second scan is guaranteed to find an empty
-                    // slot (due to the load factor) before hitting the trailing
-                    // control bytes (containing EMPTY).
-                    if unlikely(is_full(*self.table.ctrl(result))) {
-                        debug_assert!(self.table.bucket_mask < Group::WIDTH);
-                        debug_assert_ne!(pos, 0);
-                        return Group::load_aligned(self.table.ctrl(0))
-                            .match_empty_or_deleted()
-                            .lowest_set_bit_nonzero();
-                    } else {
-                        return result;
-                    }
-                }
-            }
-            probe_seq.move_next(self.bucket_mask);
-        }
-    }
-
     /// Marks all table buckets as empty without dropping their contents.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn clear_no_drop(&mut self) {
@@ -763,7 +725,7 @@ impl<T> RawTable<T> {
                     let hash = hasher(item.as_ref());
 
                     // Search for a suitable place to put it
-                    let new_i = guard.find_insert_slot(hash);
+                    let new_i = guard.table.find_insert_slot(hash);
 
                     // Probing works by scanning through all of the control
                     // bytes in groups, which may not be aligned to the group
@@ -846,7 +808,7 @@ impl<T> RawTable<T> {
                 // - there are no DELETED entries.
                 // - we know there is enough space in the table.
                 // - all elements are unique.
-                let index = new_table.find_insert_slot(hash);
+                let index = new_table.table.find_insert_slot(hash);
                 new_table.table.set_ctrl(index, h2(hash));
                 new_table.bucket(index).copy_from_nonoverlapping(&item);
             }
@@ -867,7 +829,7 @@ impl<T> RawTable<T> {
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn insert(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
         unsafe {
-            let mut index = self.find_insert_slot(hash);
+            let mut index = self.table.find_insert_slot(hash);
 
             // We can avoid growing the table once we have reached our load
             // factor if we are replacing a tombstone. This works since the
@@ -875,7 +837,7 @@ impl<T> RawTable<T> {
             let old_ctrl = *self.table.ctrl(index);
             if unlikely(self.table.growth_left == 0 && special_is_empty(old_ctrl)) {
                 self.reserve(1, hasher);
-                index = self.find_insert_slot(hash);
+                index = self.table.find_insert_slot(hash);
             }
 
             let bucket = self.bucket(index);
@@ -1132,6 +1094,44 @@ impl RawTableInner {
             items: 0,
             growth_left: bucket_mask_to_capacity(buckets - 1),
         })
+    }
+
+    /// Searches for an empty or deleted bucket which is suitable for inserting
+    /// a new element.
+    ///
+    /// There must be at least 1 empty bucket in the table.
+    #[cfg_attr(feature = "inline-more", inline)]
+    fn find_insert_slot(&self, hash: u64) -> usize {
+        let mut probe_seq = self.probe_seq(hash);
+        loop {
+            let pos = probe_seq.pos;
+            unsafe {
+                let group = Group::load(self.ctrl(pos));
+                if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
+                    let result = (pos + bit) & self.bucket_mask;
+
+                    // In tables smaller than the group width, trailing control
+                    // bytes outside the range of the table are filled with
+                    // EMPTY entries. These will unfortunately trigger a
+                    // match, but once masked may point to a full bucket that
+                    // is already occupied. We detect this situation here and
+                    // perform a second scan starting at the begining of the
+                    // table. This second scan is guaranteed to find an empty
+                    // slot (due to the load factor) before hitting the trailing
+                    // control bytes (containing EMPTY).
+                    if unlikely(is_full(*self.ctrl(result))) {
+                        debug_assert!(self.bucket_mask < Group::WIDTH);
+                        debug_assert_ne!(pos, 0);
+                        return Group::load_aligned(self.ctrl(0))
+                            .match_empty_or_deleted()
+                            .lowest_set_bit_nonzero();
+                    } else {
+                        return result;
+                    }
+                }
+            }
+            probe_seq.move_next(self.bucket_mask);
+        }
     }
 
     fn prepare_rehash_in_place(&mut self) {
