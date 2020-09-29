@@ -693,10 +693,9 @@ impl<T> RawTable<T> {
             // At this point, DELETED elements are elements that we haven't
             // rehashed yet. Find them and re-insert them at their ideal
             // position.
-            'outer: for i in 0..guard.buckets() {
-                if *guard.ctrl(i) != DELETED {
-                    continue;
-                }
+            let mut start = 0;
+            'outer: while let Some(i) = guard.next_deleted(start) {
+                start = i + 1;
                 'inner: loop {
                     // Hash the current item
                     let item = guard.bucket(i);
@@ -1255,6 +1254,10 @@ impl RawTableInner {
     #[cfg_attr(feature = "inline-more", inline)]
     fn is_empty_singleton(&self) -> bool {
         self.bucket_mask == 0
+    }
+
+    unsafe fn next_deleted(&self, start: usize) -> Option<usize> {
+        (start..self.buckets()).find(|&i| *self.ctrl(i) == DELETED)
     }
 
     unsafe fn rehash_panic_guard<'s>(
