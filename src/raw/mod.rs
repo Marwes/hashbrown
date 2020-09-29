@@ -422,13 +422,20 @@ impl<T> RawTable<T> {
                     Some(buckets) => buckets,
                     None => return Err(fallability.capacity_overflow()),
                 };
-                let result = Self::new_uninitialized(buckets, fallability)?;
-                result
-                    .table
-                    .ctrl(0)
-                    .write_bytes(EMPTY, result.table.num_ctrl_bytes());
-
-                Ok(result)
+                // Avoid `Option::ok_or_else` because it bloats LLVM IR.
+                let (layout, ctrl_offset) = match calculate_layout::<T>(buckets) {
+                    Some(lco) => lco,
+                    None => return Err(fallability.capacity_overflow()),
+                };
+                Ok(Self {
+                    table: RawTableInner::fallible_with_capacity(
+                        buckets,
+                        fallability,
+                        layout,
+                        ctrl_offset,
+                    )?,
+                    marker: PhantomData,
+                })
             }
         }
     }
@@ -1073,6 +1080,20 @@ impl RawTableInner {
             items: 0,
             growth_left: bucket_mask_to_capacity(buckets - 1),
         })
+    }
+
+    /// Attempts to allocate a new hash table with at least enough capacity
+    /// for inserting the given number of elements without reallocating.
+    unsafe fn fallible_with_capacity(
+        buckets: usize,
+        fallability: Fallibility,
+        layout: Layout,
+        ctrl_offset: usize,
+    ) -> Result<Self, TryReserveError> {
+        let result = Self::new_uninitialized(buckets, fallability, layout, ctrl_offset)?;
+        result.ctrl(0).write_bytes(EMPTY, result.num_ctrl_bytes());
+
+        Ok(result)
     }
 
     /// Searches for an empty or deleted bucket which is suitable for inserting
