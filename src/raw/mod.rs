@@ -602,13 +602,16 @@ impl<T, A: AllocRef + Clone> RawTable<T, A> {
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn clear(&mut self) {
         // Ensure that the table is reset even if one of the drops panic
-        let self_ = guard(self, |self_| self_.clear_no_drop());
+        let mut self_ = guard(self, |self_| self_.clear_no_drop());
+        unsafe {
+            self_.drop_elements();
+        }
+    }
 
-        if mem::needs_drop::<T>() && self_.len() != 0 {
-            unsafe {
-                for item in self_.iter() {
-                    item.drop();
-                }
+    unsafe fn drop_elements(&mut self) {
+        if mem::needs_drop::<T>() && self.len() != 0 {
+            for item in self.iter() {
+                item.drop();
             }
         }
     }
@@ -1402,11 +1405,7 @@ impl<T: Clone, A: AllocRef + Clone> Clone for RawTable<T, A> {
         } else {
             unsafe {
                 // First, drop all our elements without clearing the control bytes.
-                if mem::needs_drop::<T>() && self.len() != 0 {
-                    for item in self.iter() {
-                        item.drop();
-                    }
-                }
+                self.drop_elements();
 
                 // If necessary, resize our table to match the source.
                 if self.buckets() != source.buckets() {
@@ -1561,11 +1560,7 @@ unsafe impl<#[may_dangle] T, A: AllocRef + Clone> Drop for RawTable<T, A> {
     fn drop(&mut self) {
         if !self.is_empty_singleton() {
             unsafe {
-                if mem::needs_drop::<T>() && self.len() != 0 {
-                    for item in self.iter() {
-                        item.drop();
-                    }
-                }
+                self.drop_elements();
                 self.free_buckets();
             }
         }
@@ -1577,11 +1572,7 @@ impl<T, A: AllocRef + Clone> Drop for RawTable<T, A> {
     fn drop(&mut self) {
         if !self.is_empty_singleton() {
             unsafe {
-                if mem::needs_drop::<T>() && self.len() != 0 {
-                    for item in self.iter() {
-                        item.drop();
-                    }
-                }
+                self.drop_elements();
                 self.free_buckets();
             }
         }
