@@ -715,11 +715,12 @@ impl<T> RawTable<T> {
             // that we haven't rehashed yet. We unfortunately can't preserve the
             // element since we lost their hash and have no way of recovering it
             // without risking another panic.
-            let mut guard =
-                self.table
-                    .rehash_panic_guard(mem::needs_drop::<T>(), |bucket: Bucket<u8>| {
-                        bucket.cast::<T>().drop();
-                    });
+            let mut guard = self.table.rehash_panic_guard(
+                mem::needs_drop::<T>(),
+                |self_: &mut RawTableInner, index| {
+                    self_.bucket::<T>(index).drop();
+                },
+            );
 
             // At this point, DELETED elements are elements that we haven't
             // rehashed yet. Find them and re-insert them at their ideal
@@ -1159,13 +1160,9 @@ impl RawTableInner {
     }
 
     unsafe fn bucket<T>(&self, index: usize) -> Bucket<T> {
-        self.raw_bucket(index).cast::<T>()
-    }
-
-    unsafe fn raw_bucket(&self, index: usize) -> Bucket<u8> {
         debug_assert_ne!(self.bucket_mask, 0);
         debug_assert!(index < self.buckets());
-        Bucket::from_base_index(self.data_end(), index)
+        Bucket::from_base_index(self.data_end().cast::<T>(), index)
     }
 
     unsafe fn data_end(&self) -> NonNull<u8> {
@@ -1278,14 +1275,14 @@ impl RawTableInner {
     unsafe fn rehash_panic_guard<'s>(
         &'s mut self,
         needs_drop: bool,
-        drop: fn(Bucket<u8>),
+        drop: fn(&mut Self, usize),
     ) -> crate::scopeguard::ScopeGuard<&mut Self, impl FnMut(&mut &'s mut Self) + 's> {
         guard(self, move |self_| {
             if needs_drop {
                 for i in 0..self_.buckets() {
                     if *self_.ctrl(i) == DELETED {
                         self_.set_ctrl(i, EMPTY);
-                        drop(self_.raw_bucket(i));
+                        drop(self_, i);
                         self_.items -= 1;
                     }
                 }
@@ -1987,7 +1984,12 @@ impl<T> FusedIterator for RawDrain<'_, T> {}
 ///
 /// In rare cases, the iterator may return a bucket with a different hash.
 pub struct RawIterHash<'a, T> {
-    table: &'a RawTable<T>,
+    inner: RawIterHashInner<'a>,
+    marker: PhantomData<&'a T>,
+}
+
+struct RawIterHashInner<'a> {
+    table: &'a RawTableInner,
 
     // The top 7 bits of the hash.
     h2_hash: u8,
@@ -2003,13 +2005,22 @@ pub struct RawIterHash<'a, T> {
 
 impl<'a, T> RawIterHash<'a, T> {
     fn new(table: &'a RawTable<T>, hash: u64) -> Self {
+        RawIterHash {
+            inner: RawIterHashInner::new(&table.table, hash),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'a> RawIterHashInner<'a> {
+    fn new(table: &'a RawTableInner, hash: u64) -> Self {
         unsafe {
             let h2_hash = h2(hash);
-            let probe_seq = table.table.probe_seq(hash);
-            let group = Group::load(table.table.ctrl(probe_seq.pos));
+            let probe_seq = table.probe_seq(hash);
+            let group = Group::load(table.ctrl(probe_seq.pos));
             let bitmask = group.match_byte(h2_hash).into_iter();
 
-            RawIterHash {
+            RawIterHashInner {
                 table,
                 h2_hash,
                 probe_seq,
@@ -2025,19 +2036,27 @@ impl<'a, T> Iterator for RawIterHash<'a, T> {
 
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
-            loop {
-                if let Some(bit) = self.bitmask.next() {
-                    let index = (self.probe_seq.pos + bit) & self.table.table.bucket_mask;
-                    let bucket = self.table.bucket(index);
-                    return Some(bucket);
-                }
-                if likely(self.group.match_empty().any_bit_set()) {
-                    return None;
-                }
-                self.probe_seq.move_next(self.table.table.bucket_mask);
-                self.group = Group::load(self.table.table.ctrl(self.probe_seq.pos));
-                self.bitmask = self.group.match_byte(self.h2_hash).into_iter();
+            match self.inner.next() {
+                Some(index) => Some(self.inner.table.bucket(index)),
+                None => None,
             }
+        }
+    }
+}
+
+impl<'a> RawIterHashInner<'a> {
+    unsafe fn next(&mut self) -> Option<usize> {
+        loop {
+            if let Some(bit) = self.bitmask.next() {
+                let index = (self.probe_seq.pos + bit) & self.table.bucket_mask;
+                return Some(index);
+            }
+            if likely(self.group.match_empty().any_bit_set()) {
+                return None;
+            }
+            self.probe_seq.move_next(self.table.bucket_mask);
+            self.group = Group::load(self.table.ctrl(self.probe_seq.pos));
+            self.bitmask = self.group.match_byte(self.h2_hash).into_iter();
         }
     }
 }
