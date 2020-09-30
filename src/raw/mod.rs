@@ -845,7 +845,7 @@ impl<T, A: AllocRef + Clone> RawTable<T, A> {
     pub fn insert_no_grow(&mut self, hash: u64, value: T) -> Bucket<T> {
         unsafe {
             let index = self.table.find_insert_slot(hash);
-            let bucket = self.bucket(index);
+            let bucket = self.table.bucket(index);
 
             // If we are replacing a DELETED entry then we don't need to update
             // the load counter.
@@ -1513,7 +1513,7 @@ impl<T: Clone, A: AllocRef + Clone> RawTable<T, A> {
         // elements one by one. We don't do this if we have the same number of
         // buckets as the source since we can just copy the contents directly
         // in that case.
-        if self.buckets() != source.buckets()
+        if self.table.buckets() != source.table.buckets()
             && bucket_mask_to_capacity(self.table.bucket_mask) >= source.len()
         {
             self.clear();
@@ -1633,7 +1633,7 @@ impl<T> RawIterRange<T> {
     #[cfg(feature = "rayon")]
     pub(crate) fn split(mut self) -> (Self, Option<RawIterRange<T>>) {
         unsafe {
-            if self.end <= self.next_ctrl {
+            if self.inner.end <= self.inner.next_ctrl {
                 // Nothing to split if the group that we are current processing
                 // is the last one.
                 (self, None)
@@ -1641,7 +1641,7 @@ impl<T> RawIterRange<T> {
                 // len is the remaining number of elements after the group that
                 // we are currently processing. It must be a multiple of the
                 // group size (small tables are caught by the check above).
-                let len = offset_from(self.end, self.next_ctrl);
+                let len = offset_from(self.inner.end, self.inner.next_ctrl);
                 debug_assert_eq!(len % Group::WIDTH, 0);
 
                 // Split the remaining elements into two halves, but round the
@@ -1653,7 +1653,7 @@ impl<T> RawIterRange<T> {
                 let mid = (len / 2) & !(Group::WIDTH - 1);
 
                 let tail = Self::new(
-                    self.next_ctrl.add(mid),
+                    self.inner.next_ctrl.add(mid),
                     self.data.next_n(Group::WIDTH).next_n(mid),
                     len - mid,
                 );
@@ -1661,9 +1661,9 @@ impl<T> RawIterRange<T> {
                     self.data.next_n(Group::WIDTH).next_n(mid).ptr,
                     tail.data.ptr
                 );
-                debug_assert_eq!(self.end, tail.end);
-                self.end = self.next_ctrl.add(mid);
-                debug_assert_eq!(self.end.add(Group::WIDTH), tail.next_ctrl);
+                debug_assert_eq!(self.inner.end, tail.inner.end);
+                self.inner.end = self.inner.next_ctrl.add(mid);
+                debug_assert_eq!(self.inner.end.add(Group::WIDTH), tail.inner.next_ctrl);
                 (self, Some(tail))
             }
         }
@@ -1817,7 +1817,7 @@ impl<T> RawIter<T> {
                 return;
             }
 
-            if self.iter.next_ctrl < self.iter.end
+            if self.iter.inner.next_ctrl < self.iter.inner.end
                 && b.as_ptr() <= self.iter.data.next_n(Group::WIDTH).as_ptr()
             {
                 // The iterator has not yet reached the bucket's group.
@@ -1828,7 +1828,7 @@ impl<T> RawIter<T> {
                     // To do that, we need to find its control byte. We know that self.iter.data is
                     // at self.iter.next_ctrl - Group::WIDTH, so we work from there:
                     let offset = offset_from(self.iter.data.as_ptr(), b.as_ptr());
-                    let ctrl = self.iter.next_ctrl.sub(Group::WIDTH).add(offset);
+                    let ctrl = self.iter.inner.next_ctrl.sub(Group::WIDTH).add(offset);
                     // This method should be called _before_ a removal, or _after_ an insert,
                     // so in both cases the ctrl byte should indicate that the bucket is full.
                     assert!(is_full(*ctrl));
@@ -1851,7 +1851,7 @@ impl<T> RawIter<T> {
             //  - Otherwise, update the iterator cached group so that it won't
             //    yield a to-be-removed bucket, or _will_ yield a to-be-added bucket.
             //    We'll also need ot update the item count accordingly.
-            if let Some(index) = self.iter.current_group.lowest_set_bit() {
+            if let Some(index) = self.iter.inner.current_group.lowest_set_bit() {
                 let next_bucket = self.iter.data.next_n(index);
                 if b.as_ptr() > next_bucket.as_ptr() {
                     // The toggled bucket is "before" the bucket the iterator would yield next. We
@@ -1872,7 +1872,7 @@ impl<T> RawIter<T> {
                     // Instead, we _just_ flip the bit for the particular bucket the caller asked
                     // us to reflect.
                     let our_bit = offset_from(self.iter.data.as_ptr(), b.as_ptr());
-                    let was_full = self.iter.current_group.flip(our_bit);
+                    let was_full = self.iter.inner.current_group.flip(our_bit);
                     debug_assert_ne!(was_full, is_insert);
 
                     if is_insert {
@@ -1884,10 +1884,16 @@ impl<T> RawIter<T> {
                     if cfg!(debug_assertions) {
                         if b.as_ptr() == next_bucket.as_ptr() {
                             // The removed bucket should no longer be next
-                            debug_assert_ne!(self.iter.current_group.lowest_set_bit(), Some(index));
+                            debug_assert_ne!(
+                                self.iter.inner.current_group.lowest_set_bit(),
+                                Some(index)
+                            );
                         } else {
                             // We should not have changed what bucket comes next.
-                            debug_assert_eq!(self.iter.current_group.lowest_set_bit(), Some(index));
+                            debug_assert_eq!(
+                                self.iter.inner.current_group.lowest_set_bit(),
+                                Some(index)
+                            );
                         }
                     }
                 }
