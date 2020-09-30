@@ -1383,14 +1383,15 @@ impl<T: Copy> RawTableClone for RawTable<T> {
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn clone_from_spec(&mut self, source: &Self, _on_panic: impl FnMut(&mut Self)) {
         source
+            .table
             .ctrl(0)
-            .copy_to_nonoverlapping(self.ctrl(0), self.num_ctrl_bytes());
+            .copy_to_nonoverlapping(self.table.ctrl(0), self.table.num_ctrl_bytes());
         source
             .data_start()
-            .copy_to_nonoverlapping(self.data_start(), self.buckets());
+            .copy_to_nonoverlapping(self.data_start(), self.table.buckets());
 
-        self.items = source.items;
-        self.growth_left = source.growth_left;
+        self.table.items = source.table.items;
+        self.table.growth_left = source.table.growth_left;
     }
 }
 
