@@ -1223,6 +1223,7 @@ impl RawTableInner {
         (start..self.buckets()).find(|&i| *self.ctrl(i) == DELETED)
     }
 
+    #[allow(clippy::mut_mut)]
     unsafe fn rehash_panic_guard<'s>(
         &'s mut self,
         needs_drop: bool,
@@ -1242,6 +1243,7 @@ impl RawTableInner {
         })
     }
 
+    #[allow(clippy::mut_mut)]
     unsafe fn resize_panic_guard<'s>(
         &'s mut self,
         layout: fn(usize) -> Option<(Layout, usize)>,
