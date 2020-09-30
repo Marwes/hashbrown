@@ -1455,7 +1455,7 @@ impl<T: Copy, A: AllocRef + Clone> RawTableClone for RawTable<T, A> {
             .copy_to_nonoverlapping(self.table.ctrl(0), self.table.num_ctrl_bytes());
         source
             .data_start()
-            .copy_to_nonoverlapping(self.data_start(), self.buckets());
+            .copy_to_nonoverlapping(self.data_start(), self.table.buckets());
 
         self.table.items = source.table.items;
         self.table.growth_left = source.table.growth_left;
