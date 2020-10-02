@@ -2141,6 +2141,7 @@ impl<'a, T, A: AllocRef + Clone> RawIterHash<'a, T, A> {
 }
 
 impl<'a, A: AllocRef + Clone> RawIterHashInner<'a, A> {
+    #[inline]
     fn new(table: &'a RawTableInner<A>, hash: u64) -> Self {
         unsafe {
             let h2_hash = h2(hash);
@@ -2173,6 +2174,7 @@ impl<'a, T, A: AllocRef + Clone> Iterator for RawIterHash<'a, T, A> {
 }
 
 impl<'a, A: AllocRef + Clone> RawIterHashInner<'a, A> {
+    #[inline]
     unsafe fn next(&mut self) -> Option<usize> {
         loop {
             if let Some(bit) = self.bitmask.next() {
