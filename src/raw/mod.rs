@@ -369,6 +369,7 @@ impl<T> Bucket<T> {
         self.as_ptr().copy_from_nonoverlapping(other.as_ptr(), 1);
     }
 
+    #[cfg_attr(feature = "inline-more", inline)]
     fn cast<U>(self) -> Bucket<U> {
         Bucket {
             ptr: self.ptr.cast(),
@@ -1672,12 +1673,23 @@ impl<T> RawIterRange<T> {
 
                 let tail = Self::new(
                     self.inner.next_ctrl.add(mid),
-                    self.data.next_n(Group::WIDTH).next_n(mid),
+                    self.inner
+                        .data
+                        .clone()
+                        .cast::<T>()
+                        .next_n(Group::WIDTH)
+                        .next_n(mid),
                     len - mid,
                 );
                 debug_assert_eq!(
-                    self.data.next_n(Group::WIDTH).next_n(mid).ptr,
-                    tail.data.ptr
+                    self.inner
+                        .data
+                        .clone()
+                        .cast::<T>()
+                        .next_n(Group::WIDTH)
+                        .next_n(mid)
+                        .ptr,
+                    tail.inner.data.clone().cast::<T>().ptr
                 );
                 debug_assert_eq!(self.inner.end, tail.inner.end);
                 self.inner.end = self.inner.next_ctrl.add(mid);
