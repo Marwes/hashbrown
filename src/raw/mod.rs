@@ -2072,6 +2072,7 @@ impl<'a, T> RawIterHash<'a, T> {
 }
 
 impl<'a> RawIterHashInner<'a> {
+    #[inline]
     fn new(table: &'a RawTableInner, hash: u64) -> Self {
         unsafe {
             let h2_hash = h2(hash);
@@ -2104,6 +2105,7 @@ impl<'a, T> Iterator for RawIterHash<'a, T> {
 }
 
 impl<'a> RawIterHashInner<'a> {
+    #[inline]
     unsafe fn next(&mut self) -> Option<usize> {
         loop {
             if let Some(bit) = self.bitmask.next() {
