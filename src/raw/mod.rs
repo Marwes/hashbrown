@@ -262,7 +262,7 @@ fn calculate_layout<T>(buckets: usize) -> Option<(Layout, usize)> {
     calculate_layout_(mem::align_of::<T>(), mem::size_of::<T>(), buckets)
 }
 
-#[cfg_attr(feature = "inline-more", inline)]
+#[inline]
 #[cfg(not(feature = "nightly"))]
 fn calculate_layout_(align_of: usize, size_of: usize, buckets: usize) -> Option<(Layout, usize)> {
     debug_assert!(buckets.is_power_of_two());
@@ -377,6 +377,8 @@ pub struct RawTable<T, A: AllocRef + Clone> {
     marker: PhantomData<T>,
 }
 
+/// Non-generic part of `RawTable` which allows functions to be instantiated only once regardless
+/// of how many different key-value types are used.
 pub struct RawTableInner<A> {
     // Mask to get an index from a hash value. The value is one less than the
     // number of buckets in the table.
@@ -1101,6 +1103,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
         }
     }
 
+    #[inline]
     unsafe fn fallible_with_capacity_inner(
         alloc: A,
         buckets: usize,
@@ -1118,7 +1121,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     /// a new element.
     ///
     /// There must be at least 1 empty bucket in the table.
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn find_insert_slot(&self, hash: u64) -> usize {
         let mut probe_seq = self.probe_seq(hash);
         loop {
@@ -1152,6 +1155,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
         }
     }
 
+    #[inline]
     fn prepare_rehash_in_place(&mut self) {
         unsafe {
             // Bulk convert all full control bytes to DELETED, and all DELETED
@@ -1175,16 +1179,19 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
         }
     }
 
+    #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn bucket<T>(&self, index: usize) -> Bucket<T> {
         debug_assert_ne!(self.bucket_mask, 0);
         debug_assert!(index < self.buckets());
         Bucket::from_base_index(self.data_end(), index)
     }
 
+    #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn data_end<T>(&self) -> NonNull<T> {
         NonNull::new_unchecked(self.ctrl.as_ptr() as *mut T)
     }
 
+    #[inline]
     unsafe fn search_new_slot(&mut self, i: usize, hash: u64) -> Slot {
         // Search for a suitable place to put it
         let new_i = self.find_insert_slot(hash);
@@ -1220,7 +1227,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     /// This iterator never terminates, but is guaranteed to visit each bucket
     /// group exactly once. The loop using `probe_seq` must terminate upon
     /// reaching a group containing an empty bucket.
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn probe_seq(&self, hash: u64) -> ProbeSeq {
         ProbeSeq {
             pos: h1(hash) & self.bucket_mask,
@@ -1230,7 +1237,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
 
     /// Sets a control byte, and possibly also the replicated control byte at
     /// the end of the array.
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     unsafe fn set_ctrl(&self, index: usize, ctrl: u8) {
         // Replicate the first Group::WIDTH control bytes at the end of
         // the array without using a branch:
@@ -1257,23 +1264,23 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     }
 
     /// Returns a pointer to a control byte.
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     unsafe fn ctrl(&self, index: usize) -> *mut u8 {
         debug_assert!(index < self.num_ctrl_bytes());
         self.ctrl.as_ptr().add(index)
     }
 
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn buckets(&self) -> usize {
         self.bucket_mask + 1
     }
 
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn num_ctrl_bytes(&self) -> usize {
         self.bucket_mask + 1 + Group::WIDTH
     }
 
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn is_empty_singleton(&self) -> bool {
         self.bucket_mask == 0
     }
@@ -1283,6 +1290,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     }
 
     #[allow(clippy::mut_mut)]
+    #[inline]
     unsafe fn rehash_panic_guard<'s>(
         &'s mut self,
         needs_drop: bool,
@@ -1303,6 +1311,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     }
 
     #[allow(clippy::mut_mut)]
+    #[inline]
     unsafe fn resize_panic_guard<'s>(
         &'s mut self,
         layout: fn(usize) -> Option<(Layout, usize)>,
@@ -1318,7 +1327,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
         })
     }
 
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     unsafe fn free_buckets(&mut self, layout: Layout, ctrl_offset: usize) {
         self.alloc.dealloc(
             NonNull::new_unchecked(self.ctrl.as_ptr().sub(ctrl_offset)),
@@ -1327,7 +1336,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     }
 
     /// Marks all table buckets as empty without dropping their contents.
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     fn clear_no_drop(&mut self) {
         if !self.is_empty_singleton() {
             unsafe {
@@ -1338,7 +1347,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
         self.growth_left = bucket_mask_to_capacity(self.bucket_mask);
     }
 
-    #[cfg_attr(feature = "inline-more", inline)]
+    #[inline]
     unsafe fn erase(&mut self, index: usize) {
         debug_assert!(is_full(*self.ctrl(index)));
         let index_before = index.wrapping_sub(Group::WIDTH) & self.bucket_mask;
