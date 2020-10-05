@@ -1635,6 +1635,17 @@ impl RawIterRangeInner {
     }
 
     #[inline]
+    unsafe fn next_group(&mut self) -> Option<()> {
+        if self.next_ctrl >= self.end {
+            None
+        } else {
+            self.current_group = Group::load_aligned(self.next_ctrl).match_full();
+            self.next_ctrl = self.next_ctrl.add(Group::WIDTH);
+            Some(())
+        }
+    }
+
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         // We don't have an item count, so just guess based on the range size.
         (
@@ -1666,13 +1677,8 @@ impl<T> Iterator for RawIterRange<T> {
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
             loop {
-                if let Some(index) = self.inner.current_group.lowest_set_bit() {
-                    self.inner.current_group = self.inner.current_group.remove_lowest_bit();
+                if let Some(index) = self.inner.current_group.take_next_bit() {
                     return Some(self.data.next_n(index));
-                }
-
-                if self.inner.next_ctrl >= self.inner.end {
-                    return None;
                 }
 
                 // We might read past self.end up to the next group boundary,
@@ -1680,9 +1686,10 @@ impl<T> Iterator for RawIterRange<T> {
                 // than the group size where the trailing control bytes are all
                 // EMPTY. On larger tables self.end is guaranteed to be aligned
                 // to the group size (since tables are power-of-two sized).
-                self.inner.current_group = Group::load_aligned(self.inner.next_ctrl).match_full();
+                if let None = self.inner.next_group() {
+                    return None;
+                }
                 self.data = self.data.next_n(Group::WIDTH);
-                self.inner.next_ctrl = self.inner.next_ctrl.add(Group::WIDTH);
             }
         }
     }
