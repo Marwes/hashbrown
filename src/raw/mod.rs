@@ -1781,14 +1781,22 @@ impl<T> RawIter<T> {
     #[cfg(feature = "raw")]
     fn reflect_toggle_full(&mut self, b: &Bucket<T>, is_insert: bool) {
         unsafe {
-            if b.as_ptr() > self.iter.data.as_ptr() {
+            if b.as_ptr() as *mut u8 > self.iter.inner.data.as_ptr() {
                 // The iterator has already passed the bucket's group.
                 // So the toggle isn't relevant to this iterator.
                 return;
             }
 
             if self.iter.inner.next_ctrl < self.iter.inner.end
-                && b.as_ptr() <= self.iter.data.next_n(Group::WIDTH).as_ptr()
+                && b.as_ptr()
+                    <= self
+                        .iter
+                        .inner
+                        .data
+                        .clone()
+                        .cast::<T>()
+                        .next_n(Group::WIDTH)
+                        .as_ptr()
             {
                 // The iterator has not yet reached the bucket's group.
                 // We don't need to reload anything, but we do need to adjust the item count.
@@ -1797,7 +1805,10 @@ impl<T> RawIter<T> {
                     // Double-check that the user isn't lying to us by checking the bucket state.
                     // To do that, we need to find its control byte. We know that self.iter.data is
                     // at self.iter.next_ctrl - Group::WIDTH, so we work from there:
-                    let offset = offset_from(self.iter.data.as_ptr(), b.as_ptr());
+                    let offset = offset_from(
+                        self.iter.inner.data.clone().cast::<T>().as_ptr(),
+                        b.as_ptr(),
+                    );
                     let ctrl = self.iter.inner.next_ctrl.sub(Group::WIDTH).add(offset);
                     // This method should be called _before_ a removal, or _after_ an insert,
                     // so in both cases the ctrl byte should indicate that the bucket is full.
@@ -1822,7 +1833,7 @@ impl<T> RawIter<T> {
             //    yield a to-be-removed bucket, or _will_ yield a to-be-added bucket.
             //    We'll also need ot update the item count accordingly.
             if let Some(index) = self.iter.inner.current_group.lowest_set_bit() {
-                let next_bucket = self.iter.data.next_n(index);
+                let next_bucket = self.iter.inner.data.clone().cast::<T>().next_n(index);
                 if b.as_ptr() > next_bucket.as_ptr() {
                     // The toggled bucket is "before" the bucket the iterator would yield next. We
                     // therefore don't need to do anything --- the iterator has already passed the
@@ -1841,7 +1852,10 @@ impl<T> RawIter<T> {
                     // call to reflect for those buckets might _also_ decrement the item count.
                     // Instead, we _just_ flip the bit for the particular bucket the caller asked
                     // us to reflect.
-                    let our_bit = offset_from(self.iter.data.as_ptr(), b.as_ptr());
+                    let our_bit = offset_from(
+                        self.iter.inner.data.clone().cast::<T>().as_ptr(),
+                        b.as_ptr(),
+                    );
                     let was_full = self.iter.inner.current_group.flip(our_bit);
                     debug_assert_ne!(was_full, is_insert);
 
