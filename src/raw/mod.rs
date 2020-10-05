@@ -368,13 +368,6 @@ impl<T> Bucket<T> {
     pub unsafe fn copy_from_nonoverlapping(&self, other: &Self) {
         self.as_ptr().copy_from_nonoverlapping(other.as_ptr(), 1);
     }
-
-    #[cfg_attr(feature = "inline-more", inline)]
-    fn cast<U>(self) -> Bucket<U> {
-        Bucket {
-            ptr: self.ptr.cast(),
-        }
-    }
 }
 
 /// A raw hash table with an unsafe API.
@@ -1612,14 +1605,12 @@ impl<T, A: AllocRef + Clone> IntoIterator for RawTable<T, A> {
 /// not track an item count.
 pub(crate) struct RawIterRange<T> {
     inner: RawIterRangeInner,
-    marker: PhantomData<T>,
+    // Pointer to the buckets for the current group.
+    data: Bucket<T>,
 }
 
 #[derive(Clone)]
 pub(crate) struct RawIterRangeInner {
-    // Pointer to the buckets for the current group.
-    data: Bucket<u8>,
-
     // Mask of full buckets in the current group. Bits are cleared from this
     // mask as each element is processed.
     current_group: BitMask,
@@ -1639,8 +1630,8 @@ impl<T> RawIterRange<T> {
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn new(ctrl: *const u8, data: Bucket<T>, len: usize) -> Self {
         Self {
-            inner: RawIterRangeInner::new(ctrl, data.cast(), len),
-            marker: PhantomData,
+            inner: RawIterRangeInner::new(ctrl, len),
+            data,
         }
     }
 
@@ -1673,23 +1664,12 @@ impl<T> RawIterRange<T> {
 
                 let tail = Self::new(
                     self.inner.next_ctrl.add(mid),
-                    self.inner
-                        .data
-                        .clone()
-                        .cast::<T>()
-                        .next_n(Group::WIDTH)
-                        .next_n(mid),
+                    self.inner.data.next_n(Group::WIDTH).next_n(mid),
                     len - mid,
                 );
                 debug_assert_eq!(
-                    self.inner
-                        .data
-                        .clone()
-                        .cast::<T>()
-                        .next_n(Group::WIDTH)
-                        .next_n(mid)
-                        .ptr,
-                    tail.inner.data.clone().cast::<T>().ptr
+                    self.data.next_n(Group::WIDTH).next_n(mid).ptr,
+                    tail.data.ptr
                 );
                 debug_assert_eq!(self.inner.end, tail.inner.end);
                 self.inner.end = self.inner.next_ctrl.add(mid);
@@ -1700,20 +1680,12 @@ impl<T> RawIterRange<T> {
     }
 }
 
-fn offset_multiplier<T>() -> usize {
-    if mem::size_of::<T>() == 0 {
-        1
-    } else {
-        mem::size_of::<T>()
-    }
-}
-
 impl RawIterRangeInner {
     /// Returns a `RawIterRange` covering a subset of a table.
     ///
     /// The control byte address must be aligned to the group size.
     #[inline]
-    unsafe fn new(ctrl: *const u8, data: Bucket<u8>, len: usize) -> Self {
+    unsafe fn new(ctrl: *const u8, len: usize) -> Self {
         debug_assert_ne!(len, 0);
         debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
         let end = ctrl.add(len);
@@ -1726,32 +1698,6 @@ impl RawIterRangeInner {
             current_group,
             next_ctrl,
             end,
-            data,
-        }
-    }
-
-    #[inline]
-    fn next(&mut self, offset_multiplier: usize) -> Option<Bucket<u8>> {
-        unsafe {
-            loop {
-                if let Some(index) = self.current_group.lowest_set_bit() {
-                    self.current_group = self.current_group.remove_lowest_bit();
-                    return Some(self.data.next_n(offset_multiplier * index));
-                }
-
-                if self.next_ctrl >= self.end {
-                    return None;
-                }
-
-                // We might read past self.end up to the next group boundary,
-                // but this is fine because it only occurs on tables smaller
-                // than the group size where the trailing control bytes are all
-                // EMPTY. On larger tables self.end is guaranteed to be aligned
-                // to the group size (since tables are power-of-two sized).
-                self.current_group = Group::load_aligned(self.next_ctrl).match_full();
-                self.data = self.data.next_n(offset_multiplier * Group::WIDTH);
-                self.next_ctrl = self.next_ctrl.add(Group::WIDTH);
-            }
         }
     }
 
@@ -1775,7 +1721,7 @@ impl<T> Clone for RawIterRange<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            marker: self.marker,
+            data: self.data.clone(),
         }
     }
 }
@@ -1785,10 +1731,26 @@ impl<T> Iterator for RawIterRange<T> {
 
     #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<Bucket<T>> {
-        let bucket = self.inner.next(offset_multiplier::<T>());
-        match bucket {
-            Some(bucket) => Some(bucket.cast()),
-            None => None,
+        unsafe {
+            loop {
+                if let Some(index) = self.inner.current_group.lowest_set_bit() {
+                    self.inner.current_group = self.inner.current_group.remove_lowest_bit();
+                    return Some(self.data.next_n(index));
+                }
+
+                if self.inner.next_ctrl >= self.inner.end {
+                    return None;
+                }
+
+                // We might read past self.end up to the next group boundary,
+                // but this is fine because it only occurs on tables smaller
+                // than the group size where the trailing control bytes are all
+                // EMPTY. On larger tables self.end is guaranteed to be aligned
+                // to the group size (since tables are power-of-two sized).
+                self.inner.current_group = Group::load_aligned(self.inner.next_ctrl).match_full();
+                self.data = self.data.next_n(Group::WIDTH);
+                self.inner.next_ctrl = self.inner.next_ctrl.add(Group::WIDTH);
+            }
         }
     }
 
@@ -1848,22 +1810,14 @@ impl<T> RawIter<T> {
     #[cfg(feature = "raw")]
     fn reflect_toggle_full(&mut self, b: &Bucket<T>, is_insert: bool) {
         unsafe {
-            if b.as_ptr() as *mut u8 > self.iter.inner.data.as_ptr() {
+            if b.as_ptr() > self.iter.data.as_ptr() {
                 // The iterator has already passed the bucket's group.
                 // So the toggle isn't relevant to this iterator.
                 return;
             }
 
             if self.iter.inner.next_ctrl < self.iter.inner.end
-                && b.as_ptr()
-                    <= self
-                        .iter
-                        .inner
-                        .data
-                        .clone()
-                        .cast::<T>()
-                        .next_n(Group::WIDTH)
-                        .as_ptr()
+                && b.as_ptr() <= self.iter.data.next_n(Group::WIDTH).as_ptr()
             {
                 // The iterator has not yet reached the bucket's group.
                 // We don't need to reload anything, but we do need to adjust the item count.
@@ -1872,10 +1826,7 @@ impl<T> RawIter<T> {
                     // Double-check that the user isn't lying to us by checking the bucket state.
                     // To do that, we need to find its control byte. We know that self.iter.data is
                     // at self.iter.next_ctrl - Group::WIDTH, so we work from there:
-                    let offset = offset_from(
-                        self.iter.inner.data.clone().cast::<T>().as_ptr(),
-                        b.as_ptr(),
-                    );
+                    let offset = offset_from(self.iter.data.as_ptr(), b.as_ptr());
                     let ctrl = self.iter.inner.next_ctrl.sub(Group::WIDTH).add(offset);
                     // This method should be called _before_ a removal, or _after_ an insert,
                     // so in both cases the ctrl byte should indicate that the bucket is full.
@@ -1900,7 +1851,7 @@ impl<T> RawIter<T> {
             //    yield a to-be-removed bucket, or _will_ yield a to-be-added bucket.
             //    We'll also need ot update the item count accordingly.
             if let Some(index) = self.iter.inner.current_group.lowest_set_bit() {
-                let next_bucket = self.iter.inner.data.clone().cast::<T>().next_n(index);
+                let next_bucket = self.iter.data.next_n(index);
                 if b.as_ptr() > next_bucket.as_ptr() {
                     // The toggled bucket is "before" the bucket the iterator would yield next. We
                     // therefore don't need to do anything --- the iterator has already passed the
@@ -1919,10 +1870,7 @@ impl<T> RawIter<T> {
                     // call to reflect for those buckets might _also_ decrement the item count.
                     // Instead, we _just_ flip the bit for the particular bucket the caller asked
                     // us to reflect.
-                    let our_bit = offset_from(
-                        self.iter.inner.data.clone().cast::<T>().as_ptr(),
-                        b.as_ptr(),
-                    );
+                    let our_bit = offset_from(self.iter.data.as_ptr(), b.as_ptr());
                     let was_full = self.iter.inner.current_group.flip(our_bit);
                     debug_assert_ne!(was_full, is_insert);
 
