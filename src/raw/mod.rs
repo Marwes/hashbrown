@@ -1219,8 +1219,14 @@ impl RawTableInner {
         self.bucket_mask == 0
     }
 
+    #[inline]
     unsafe fn next_deleted(&self, start: usize) -> Option<usize> {
-        (start..self.buckets()).find(|&i| *self.ctrl(i) == DELETED)
+        for i in start..self.buckets() {
+            if *self.ctrl(i) == DELETED {
+                return Some(i);
+            }
+        }
+        None
     }
 
     #[allow(clippy::mut_mut)]
