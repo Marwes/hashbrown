@@ -724,8 +724,7 @@ impl<T> RawTable<T> {
                 // - there are no DELETED entries.
                 // - we know there is enough space in the table.
                 // - all elements are unique.
-                let index = new_table.find_insert_slot(hash);
-                new_table.set_ctrl_h2(index, hash);
+                let index = new_table.prepare_insert_slot(hash);
                 new_table.bucket(index).copy_from_nonoverlapping(&item);
             }
 
@@ -782,7 +781,7 @@ impl<T> RawTable<T> {
     #[cfg(any(feature = "raw", feature = "rustc-internal-api"))]
     pub fn insert_no_grow(&mut self, hash: u64, value: T) -> Bucket<T> {
         unsafe {
-            let index = self.table.find_insert_slot(hash);
+            let index = self.table.prepare_insert_slot(hash);
             let bucket = self.table.bucket(index);
 
             // If we are replacing a DELETED entry then we don't need to update
@@ -790,7 +789,6 @@ impl<T> RawTable<T> {
             let old_ctrl = *self.table.ctrl(index);
             self.table.growth_left -= special_is_empty(old_ctrl) as usize;
 
-            self.table.set_ctrl_h2(index, hash);
             bucket.write(value);
             self.table.items += 1;
             bucket
@@ -1030,6 +1028,17 @@ impl RawTableInner {
                 Ok(result)
             }
         }
+    }
+
+    /// Searches for an empty or deleted bucket which is suitable for inserting
+    /// a new element and sets the hash for that slot.
+    ///
+    /// There must be at least 1 empty bucket in the table.
+    #[inline]
+    unsafe fn prepare_insert_slot(&self, hash: u64) -> usize {
+        let index = self.find_insert_slot(hash);
+        self.set_ctrl_h2(index, hash);
+        index
     }
 
     /// Searches for an empty or deleted bucket which is suitable for inserting
@@ -1479,8 +1488,7 @@ impl<T: Clone> RawTable<T> {
                     // - there are no DELETED entries.
                     // - we know there is enough space in the table.
                     // - all elements are unique.
-                    let index = guard_self.table.find_insert_slot(hash);
-                    guard_self.table.set_ctrl_h2(index, hash);
+                    let index = guard_self.table.prepare_insert_slot(hash);
                     guard_self.bucket(index).write(item);
                 }
             }
