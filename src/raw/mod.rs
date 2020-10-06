@@ -723,7 +723,6 @@ impl<T, A: AllocRef + Clone> RawTable<T, A> {
                     // Hash the current item
                     let item = guard.bucket(i);
                     let hash = hasher(item.as_ref());
-
                     match guard.search_new_slot(i, hash) {
                         Slot::Skip => continue 'outer,
                         Slot::Empty(new_i) => {
@@ -1665,7 +1664,7 @@ impl<T> RawIterRange<T> {
 
                 let tail = Self::new(
                     self.inner.next_ctrl.add(mid),
-                    self.inner.data.next_n(Group::WIDTH).next_n(mid),
+                    self.data.next_n(Group::WIDTH).next_n(mid),
                     len - mid,
                 );
                 debug_assert_eq!(
