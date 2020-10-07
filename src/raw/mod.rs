@@ -251,6 +251,41 @@ fn calculate_layout<T>(buckets: usize) -> Option<(Layout, usize)> {
     data.extend(ctrl).ok()
 }
 
+/// Helper which allows the max calculation for ctrl_align to be statically computed for each T
+/// while keeping the rest of `calculate_layout_for` independent of `T`
+#[derive(Copy, Clone)]
+struct TableLayout {
+    size: usize,
+    ctrl_align: usize,
+}
+
+impl TableLayout {
+    #[inline]
+    fn new<T>() -> Self {
+        let layout = Layout::new::<T>();
+        Self {
+            size: layout.size(),
+            ctrl_align: usize::max(layout.align(), Group::WIDTH),
+        }
+    }
+
+    #[inline]
+    fn calculate_layout_for(self, buckets: usize) -> Option<(Layout, usize)> {
+        debug_assert!(buckets.is_power_of_two());
+
+        let TableLayout { size, ctrl_align } = self;
+        // Manual layout calculation since Layout methods are not yet stable.
+        let ctrl_offset =
+            size.checked_mul(buckets)?.checked_add(ctrl_align - 1)? & !(ctrl_align - 1);
+        let len = ctrl_offset.checked_add(buckets + Group::WIDTH)?;
+
+        Some((
+            unsafe { Layout::from_size_align_unchecked(len, ctrl_align) },
+            ctrl_offset,
+        ))
+    }
+}
+
 /// Returns a Layout which describes the allocation required for a hash table,
 /// and the offset of the control bytes in the allocation.
 /// (the offset is also one past last element of buckets)
@@ -259,26 +294,7 @@ fn calculate_layout<T>(buckets: usize) -> Option<(Layout, usize)> {
 #[cfg_attr(feature = "inline-more", inline)]
 #[cfg(not(feature = "nightly"))]
 fn calculate_layout<T>(buckets: usize) -> Option<(Layout, usize)> {
-    calculate_layout_for(Layout::new::<T>(), buckets)
-}
-
-#[inline]
-fn calculate_layout_for(layout: Layout, buckets: usize) -> Option<(Layout, usize)> {
-    debug_assert!(buckets.is_power_of_two());
-
-    // Manual layout calculation since Layout methods are not yet stable.
-    let ctrl_align = usize::max(layout.align(), Group::WIDTH);
-    let ctrl_offset = layout
-        .size()
-        .checked_mul(buckets)?
-        .checked_add(ctrl_align - 1)?
-        & !(ctrl_align - 1);
-    let len = ctrl_offset.checked_add(buckets + Group::WIDTH)?;
-
-    Some((
-        unsafe { Layout::from_size_align_unchecked(len, ctrl_align) },
-        ctrl_offset,
-    ))
+    TableLayout::new::<T>().calculate_layout_for(buckets)
 }
 
 /// A reference to a hash table bucket containing a `T`.
@@ -443,7 +459,7 @@ impl<T, A: AllocRef + Clone> RawTable<T, A> {
         Ok(Self {
             table: RawTableInner::new_uninitialized(
                 alloc,
-                Layout::new::<T>(),
+                TableLayout::new::<T>(),
                 buckets,
                 fallability,
             )?,
@@ -461,7 +477,7 @@ impl<T, A: AllocRef + Clone> RawTable<T, A> {
         Ok(Self {
             table: RawTableInner::fallible_with_capacity(
                 alloc,
-                Layout::new::<T>(),
+                TableLayout::new::<T>(),
                 capacity,
                 fallability,
             )?,
@@ -489,7 +505,7 @@ impl<T, A: AllocRef + Clone> RawTable<T, A> {
     /// Deallocates the table without dropping any entries.
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn free_buckets(&mut self) {
-        self.table.free_buckets(Layout::new::<T>())
+        self.table.free_buckets(TableLayout::new::<T>())
     }
 
     /// Returns pointer to one past last element of data table.
@@ -756,7 +772,7 @@ impl<T, A: AllocRef + Clone> RawTable<T, A> {
         unsafe {
             let mut new_table =
                 self.table
-                    .prepare_resize(Layout::new::<T>(), capacity, fallability)?;
+                    .prepare_resize(TableLayout::new::<T>(), capacity, fallability)?;
 
             // Copy all elements to the new table.
             for item in self.iter() {
@@ -1034,14 +1050,14 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn new_uninitialized(
         alloc: A,
-        t_layout: Layout,
+        table_layout: TableLayout,
         buckets: usize,
         fallability: Fallibility,
     ) -> Result<Self, TryReserveError> {
         debug_assert!(buckets.is_power_of_two());
 
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
-        let (layout, ctrl_offset) = match calculate_layout_for(t_layout, buckets) {
+        let (layout, ctrl_offset) = match table_layout.calculate_layout_for(buckets) {
             Some(lco) => lco,
             None => return Err(fallability.capacity_overflow()),
         };
@@ -1064,7 +1080,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     #[inline]
     fn fallible_with_capacity(
         alloc: A,
-        t_layout: Layout,
+        table_layout: TableLayout,
         capacity: usize,
         fallability: Fallibility,
     ) -> Result<Self, TryReserveError> {
@@ -1075,7 +1091,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
                 let buckets =
                     capacity_to_buckets(capacity).ok_or_else(|| fallability.capacity_overflow())?;
 
-                let result = Self::new_uninitialized(alloc, t_layout, buckets, fallability)?;
+                let result = Self::new_uninitialized(alloc, table_layout, buckets, fallability)?;
                 result.ctrl(0).write_bytes(EMPTY, result.num_ctrl_bytes());
 
                 Ok(result)
@@ -1308,7 +1324,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
     #[inline]
     unsafe fn prepare_resize(
         &self,
-        layout_t: Layout,
+        table_layout: TableLayout,
         capacity: usize,
         fallability: Fallibility,
     ) -> Result<crate::scopeguard::ScopeGuard<Self, impl FnMut(&mut Self)>, TryReserveError> {
@@ -1317,7 +1333,7 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
         // Allocate and initialize the new table.
         let mut new_table = RawTableInner::fallible_with_capacity(
             self.alloc.clone(),
-            layout_t,
+            table_layout,
             capacity,
             fallability,
         )?;
@@ -1332,15 +1348,15 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
         // the comment at the bottom of this function.
         Ok(guard(new_table, move |self_| {
             if !self_.is_empty_singleton() {
-                self_.free_buckets(layout_t);
+                self_.free_buckets(table_layout);
             }
         }))
     }
 
     #[inline]
-    unsafe fn free_buckets(&mut self, t_layout: Layout) {
+    unsafe fn free_buckets(&mut self, table_layout: TableLayout) {
         // Avoid `Option::unwrap_or_else` because it bloats LLVM IR.
-        let (layout, ctrl_offset) = match calculate_layout_for(t_layout, self.buckets()) {
+        let (layout, ctrl_offset) = match table_layout.calculate_layout_for(self.buckets()) {
             Some(lco) => lco,
             None => hint::unreachable_unchecked(),
         };
