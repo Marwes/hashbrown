@@ -2141,6 +2141,7 @@ struct RawIterHashInner<'a, A> {
 }
 
 impl<'a, T, A: AllocRef + Clone> RawIterHash<'a, T, A> {
+    #[cfg_attr(feature = "inline-more", inline)]
     fn new(table: &'a RawTable<T, A>, hash: u64) -> Self {
         RawIterHash {
             inner: RawIterHashInner::new(&table.table, hash),
@@ -2172,6 +2173,7 @@ impl<'a, A: AllocRef + Clone> RawIterHashInner<'a, A> {
 impl<'a, T, A: AllocRef + Clone> Iterator for RawIterHash<'a, T, A> {
     type Item = Bucket<T>;
 
+    #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
             match self.inner.next() {
