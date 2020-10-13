@@ -2054,12 +2054,7 @@ impl<T> FusedIterator for RawDrain<'_, T> {}
 ///
 /// In rare cases, the iterator may return a bucket with a different hash.
 pub struct RawIterHash<'a, T> {
-    inner: RawIterHashInner<'a>,
-    marker: PhantomData<&'a T>,
-}
-
-struct RawIterHashInner<'a> {
-    table: &'a RawTableInner,
+    table: &'a RawTable<T>,
 
     // The top 7 bits of the hash.
     h2_hash: u8,
@@ -2074,25 +2069,14 @@ struct RawIterHashInner<'a> {
 }
 
 impl<'a, T> RawIterHash<'a, T> {
-    #[cfg_attr(feature = "inline-more", inline)]
     fn new(table: &'a RawTable<T>, hash: u64) -> Self {
-        RawIterHash {
-            inner: RawIterHashInner::new(&table.table, hash),
-            marker: PhantomData,
-        }
-    }
-}
-
-impl<'a> RawIterHashInner<'a> {
-    #[inline]
-    fn new(table: &'a RawTableInner, hash: u64) -> Self {
         unsafe {
             let h2_hash = h2(hash);
-            let probe_seq = table.probe_seq(hash);
-            let group = Group::load(table.ctrl(probe_seq.pos));
+            let probe_seq = table.table.probe_seq(hash);
+            let group = Group::load(table.table.ctrl(probe_seq.pos));
             let bitmask = group.match_byte(h2_hash).into_iter();
 
-            RawIterHashInner {
+            RawIterHash {
                 table,
                 h2_hash,
                 probe_seq,
@@ -2106,31 +2090,21 @@ impl<'a> RawIterHashInner<'a> {
 impl<'a, T> Iterator for RawIterHash<'a, T> {
     type Item = Bucket<T>;
 
-    #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
-            match self.inner.next() {
-                Some(index) => Some(self.inner.table.bucket(index)),
-                None => None,
+            loop {
+                if let Some(bit) = self.bitmask.next() {
+                    let index = (self.probe_seq.pos + bit) & self.table.table.bucket_mask;
+                    let bucket = self.table.bucket(index);
+                    return Some(bucket);
+                }
+                if likely(self.group.match_empty().any_bit_set()) {
+                    return None;
+                }
+                self.probe_seq.move_next(self.table.table.bucket_mask);
+                self.group = Group::load(self.table.table.ctrl(self.probe_seq.pos));
+                self.bitmask = self.group.match_byte(self.h2_hash).into_iter();
             }
-        }
-    }
-}
-
-impl<'a> RawIterHashInner<'a> {
-    #[inline]
-    unsafe fn next(&mut self) -> Option<usize> {
-        loop {
-            if let Some(bit) = self.bitmask.next() {
-                let index = (self.probe_seq.pos + bit) & self.table.bucket_mask;
-                return Some(index);
-            }
-            if likely(self.group.match_empty().any_bit_set()) {
-                return None;
-            }
-            self.probe_seq.move_next(self.table.bucket_mask);
-            self.group = Group::load(self.table.ctrl(self.probe_seq.pos));
-            self.bitmask = self.group.match_byte(self.h2_hash).into_iter();
         }
     }
 }
