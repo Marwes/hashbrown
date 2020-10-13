@@ -150,6 +150,7 @@ struct ProbeSeq {
 }
 
 impl ProbeSeq {
+    #[inline]
     fn move_next(&mut self, bucket_mask: usize) {
         // We should have found an empty bucket by now and ended the probe.
         debug_assert!(
