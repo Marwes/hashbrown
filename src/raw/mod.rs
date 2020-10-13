@@ -1134,15 +1134,15 @@ impl<A: AllocRef + Clone> RawTableInner<A> {
                     // table. This second scan is guaranteed to find an empty
                     // slot (due to the load factor) before hitting the trailing
                     // control bytes (containing EMPTY).
-                    if unlikely(is_full(*self.ctrl(result))) {
+                    return if unlikely(is_full(*self.ctrl(result))) {
                         debug_assert!(self.bucket_mask < Group::WIDTH);
                         debug_assert_ne!(pos, 0);
-                        return Group::load_aligned(self.ctrl(0))
+                        Group::load_aligned(self.ctrl(0))
                             .match_empty_or_deleted()
-                            .lowest_set_bit_nonzero();
+                            .lowest_set_bit_nonzero()
                     } else {
-                        return result;
-                    }
+                        result
+                    };
                 }
             }
             probe_seq.move_next(self.bucket_mask);
