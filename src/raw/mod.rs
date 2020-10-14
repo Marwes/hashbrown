@@ -1634,16 +1634,12 @@ impl<T, A: AllocRef + Clone> IntoIterator for RawTable<T, A> {
 /// Iterator over a sub-range of a table. Unlike `RawIter` this iterator does
 /// not track an item count.
 pub(crate) struct RawIterRange<T> {
-    inner: RawIterRangeInner,
-    // Pointer to the buckets for the current group.
-    data: Bucket<T>,
-}
-
-#[derive(Clone)]
-pub(crate) struct RawIterRangeInner {
     // Mask of full buckets in the current group. Bits are cleared from this
     // mask as each element is processed.
     current_group: BitMask,
+
+    // Pointer to the buckets for the current group.
+    data: Bucket<T>,
 
     // Pointer to the next group of control bytes,
     // Must be aligned to the group size.
@@ -1659,9 +1655,19 @@ impl<T> RawIterRange<T> {
     /// The control byte address must be aligned to the group size.
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn new(ctrl: *const u8, data: Bucket<T>, len: usize) -> Self {
+        debug_assert_ne!(len, 0);
+        debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
+        let end = ctrl.add(len);
+
+        // Load the first group and advance ctrl to point to the next group
+        let current_group = Group::load_aligned(ctrl).match_full();
+        let next_ctrl = ctrl.add(Group::WIDTH);
+
         Self {
-            inner: RawIterRangeInner::new(ctrl, len),
+            current_group,
             data,
+            next_ctrl,
+            end,
         }
     }
 
@@ -1673,7 +1679,7 @@ impl<T> RawIterRange<T> {
     #[cfg(feature = "rayon")]
     pub(crate) fn split(mut self) -> (Self, Option<RawIterRange<T>>) {
         unsafe {
-            if self.inner.end <= self.inner.next_ctrl {
+            if self.end <= self.next_ctrl {
                 // Nothing to split if the group that we are current processing
                 // is the last one.
                 (self, None)
@@ -1681,7 +1687,7 @@ impl<T> RawIterRange<T> {
                 // len is the remaining number of elements after the group that
                 // we are currently processing. It must be a multiple of the
                 // group size (small tables are caught by the check above).
-                let len = offset_from(self.inner.end, self.inner.next_ctrl);
+                let len = offset_from(self.end, self.next_ctrl);
                 debug_assert_eq!(len % Group::WIDTH, 0);
 
                 // Split the remaining elements into two halves, but round the
@@ -1693,7 +1699,7 @@ impl<T> RawIterRange<T> {
                 let mid = (len / 2) & !(Group::WIDTH - 1);
 
                 let tail = Self::new(
-                    self.inner.next_ctrl.add(mid),
+                    self.next_ctrl.add(mid),
                     self.data.next_n(Group::WIDTH).next_n(mid),
                     len - mid,
                 );
@@ -1701,54 +1707,12 @@ impl<T> RawIterRange<T> {
                     self.data.next_n(Group::WIDTH).next_n(mid).ptr,
                     tail.data.ptr
                 );
-                debug_assert_eq!(self.inner.end, tail.inner.end);
-                self.inner.end = self.inner.next_ctrl.add(mid);
-                debug_assert_eq!(self.inner.end.add(Group::WIDTH), tail.inner.next_ctrl);
+                debug_assert_eq!(self.end, tail.end);
+                self.end = self.next_ctrl.add(mid);
+                debug_assert_eq!(self.end.add(Group::WIDTH), tail.next_ctrl);
                 (self, Some(tail))
             }
         }
-    }
-}
-
-impl RawIterRangeInner {
-    /// Returns a `RawIterRange` covering a subset of a table.
-    ///
-    /// The control byte address must be aligned to the group size.
-    #[inline]
-    unsafe fn new(ctrl: *const u8, len: usize) -> Self {
-        debug_assert_ne!(len, 0);
-        debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
-        let end = ctrl.add(len);
-
-        // Load the first group and advance ctrl to point to the next group
-        let current_group = Group::load_aligned(ctrl).match_full();
-        let next_ctrl = ctrl.add(Group::WIDTH);
-
-        Self {
-            current_group,
-            next_ctrl,
-            end,
-        }
-    }
-
-    #[inline]
-    unsafe fn next_group(&mut self) -> Option<()> {
-        if self.next_ctrl >= self.end {
-            None
-        } else {
-            self.current_group = Group::load_aligned(self.next_ctrl).match_full();
-            self.next_ctrl = self.next_ctrl.add(Group::WIDTH);
-            Some(())
-        }
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        // We don't have an item count, so just guess based on the range size.
-        (
-            0,
-            Some(unsafe { offset_from(self.end, self.next_ctrl) + Group::WIDTH }),
-        )
     }
 }
 
@@ -1761,8 +1725,10 @@ impl<T> Clone for RawIterRange<T> {
     #[cfg_attr(feature = "inline-more", inline)]
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
             data: self.data.clone(),
+            next_ctrl: self.next_ctrl,
+            current_group: self.current_group,
+            end: self.end,
         }
     }
 }
@@ -1774,8 +1740,13 @@ impl<T> Iterator for RawIterRange<T> {
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
             loop {
-                if let Some(index) = self.inner.current_group.take_next_bit() {
+                if let Some(index) = self.current_group.lowest_set_bit() {
+                    self.current_group = self.current_group.remove_lowest_bit();
                     return Some(self.data.next_n(index));
+                }
+
+                if self.next_ctrl >= self.end {
+                    return None;
                 }
 
                 // We might read past self.end up to the next group boundary,
@@ -1783,15 +1754,20 @@ impl<T> Iterator for RawIterRange<T> {
                 // than the group size where the trailing control bytes are all
                 // EMPTY. On larger tables self.end is guaranteed to be aligned
                 // to the group size (since tables are power-of-two sized).
-                self.inner.next_group()?;
+                self.current_group = Group::load_aligned(self.next_ctrl).match_full();
                 self.data = self.data.next_n(Group::WIDTH);
+                self.next_ctrl = self.next_ctrl.add(Group::WIDTH);
             }
         }
     }
 
     #[cfg_attr(feature = "inline-more", inline)]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
+        // We don't have an item count, so just guess based on the range size.
+        (
+            0,
+            Some(unsafe { offset_from(self.end, self.next_ctrl) + Group::WIDTH }),
+        )
     }
 }
 
