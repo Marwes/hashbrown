@@ -722,11 +722,9 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
             // At this point, DELETED elements are elements that we haven't
             // rehashed yet. Find them and re-insert them at their ideal
             // position.
-            'outer: for i in 0..guard.buckets() {
-                if *guard.ctrl(i) != DELETED {
-                    continue;
-                }
 
+            'outer: for i in MaskIter::new(guard.ctrl(0), guard.items, DELETED) {
+                debug_assert!(*guard.ctrl(i) == DELETED);
                 'inner: loop {
                     // Hash the current item
                     let item = guard.bucket(i);
@@ -2157,6 +2155,61 @@ impl<'a, A: Allocator + Clone> Iterator for RawIterHashInner<'a, A> {
                 self.probe_seq.move_next(self.table.bucket_mask);
                 self.group = Group::load(self.table.ctrl(self.probe_seq.pos));
                 self.bitmask = self.group.match_byte(self.h2_hash).into_iter();
+            }
+        }
+    }
+}
+
+struct MaskIter {
+    match_byte: u8,
+
+    current_group: BitMask,
+
+    next_ctrl: *const u8,
+
+    // Pointer one past the last control byte of this range.
+    end: *const u8,
+
+    index: usize,
+}
+
+impl MaskIter {
+    // SAFETY Must not outlive the table that `ctrl` comes from
+    #[cfg_attr(feature = "inline-more", inline)]
+    unsafe fn new(ctrl: *const u8, len: usize, match_byte: u8) -> Self {
+        let current_group = Group::load_aligned(ctrl).match_byte(match_byte);
+        let next_ctrl = ctrl.add(Group::WIDTH);
+        let end = ctrl.add(len);
+
+        Self {
+            match_byte,
+            current_group,
+            next_ctrl,
+            end,
+            index: 0,
+        }
+    }
+}
+
+impl Iterator for MaskIter {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe {
+            loop {
+                if let Some(index) = self.current_group.lowest_set_bit() {
+                    self.current_group = self.current_group.remove_lowest_bit();
+                    return Some(self.index + index);
+                }
+
+                if self.next_ctrl >= self.end {
+                    return None;
+                }
+                self.current_group =
+                    Group::load_aligned(self.next_ctrl).match_byte(self.match_byte);
+                self.next_ctrl = self.next_ctrl.add(Group::WIDTH);
+                self.index += Group::WIDTH;
             }
         }
     }
